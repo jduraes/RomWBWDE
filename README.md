@@ -1,10 +1,14 @@
 # RomWBW Disk Explorer
 
-RomWBWDE is a spiritual evolution of [RC2014 CP/M Disk Explorer](https://github.com/ForNextSoftwareDevelopment/RC2014CpmDskExp) by Dirk Prins (ForNext Software Development, 2023).
+RomWBWDE is a spiritual evolution of [RC2014 CP/M Disk Explorer](https://github.com/ForNextSoftwareDevelopment/RC2014CpmDskExp) by Dirk Prins (ForNext Software Development, 2023). His program remains at that address.
 
 It reads and writes a RomWBW hd1k card or disk image, one 8 MiB slice at a time. Two panes sit side by side, in the manner of a split file manager. One pane can be a Windows folder, the other the card. Files copy in either direction. A slice can also be written, extracted, or erased on its own. The partition table and the other slices are left alone.
 
-Dirk's original .NET Framework program is still in `Src`. The pictures at the bottom of this file are from that program.
+## Writing to a disk
+
+This program can write to a real card or disk. That can destroy what is on it. It is meant to change only the slice you picked, but the wrong drive, a fault, or a bug can still wipe that card, or another disk entirely. Making a backup is your responsibility.
+
+Before you write anything, take an image of the whole card and keep it somewhere else. [Rufus](https://rufus.ie/) will do this. Select the card, click **Show advanced drive properties**, then click the save icon beside the drive and store the image. Rufus can write that image back onto a card later. Do not point this program at a drive you cannot afford to lose.
 
 ## Running it
 
@@ -80,37 +84,12 @@ dotnet build RomWBWDE.sln -c Release
 dotnet run --project RomWBWDE.Tests -c Release
 ```
 
-## The 2023 program
-
-`Src` is RC2014 CP/M Disk Explorer 1.2, unchanged. It was written for a layout of 16 drives, A to P, of 8 MB each, which is why it stopped at 128 MB. Dirk found 256 MB cards the safer choice, because some cards sold as 128 MB were physically smaller. The program had to be run as administrator, and drag and drop had been removed.
-
-The notes below, and the three screenshots, are his.
-
----
-
-# RC2014CpmDskExp
-
-RC2014 CPM Disk Explorer
-
-This is a disk image(container) browser/editor/writer for the RC2014.
-Disk images for the CP/M system can be read/altered and written again to a Compact Flash card.
-
-I found it to be better to work with 256MB CF cards.
-The 128MB cards I had were from china and in fact less then 128MB so it booted ok but produced problems accessing the files on the RC2014.
-
-Remember to start Visual Studio in Admin mode if working on the program yourself.
-This is because the program needs access to certain disk routines in the kernel32.dll.
-That is also the reason why I had to kick out the drag & drop posibility to insert files and use a filebrowser dialog.
-
-Copyright (c) 2023 Dirk Prins
-
-![Screenshot](ScreenShot1.png)
-
-![Screenshot](ScreenShot2.png)
-
-![Screenshot](ScreenShot3.png)
-
 ## Licence
+
+RC2014 CP/M Disk Explorer, Copyright (c) 2023 Dirk Prins.
+https://github.com/ForNextSoftwareDevelopment/RC2014CpmDskExp
+
+
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
