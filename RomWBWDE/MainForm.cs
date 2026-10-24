@@ -1,3 +1,4 @@
+using System.Reflection;
 using RomWBWDE;
 
 namespace RomWBWDE.Explorer;
@@ -11,7 +12,8 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "RomWBW Disk Explorer";
+        Version? version = typeof(MainForm).Assembly.GetName().Version;
+        Text = version == null ? "RomWBW Disk Explorer" : "RomWBW Disk Explorer " + version.ToString(3);
         MinimumSize = new Size(1080, 680);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.White;
@@ -92,7 +94,7 @@ internal sealed class MainForm : Form
         _status.Text = "F5 copies from the active panel. A copy onto the card writes only the selected slice.";
         try
         {
-            _left.OpenFolder(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            _left.OpenFolder(FolderMemory.Recall());
         }
         catch (Exception ex)
         {

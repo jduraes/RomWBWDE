@@ -36,19 +36,22 @@ public sealed class CpmFileSystem : IDisposable
     public const int EntryCapacity = ExtentsPerEntry * LogicalExtentSize;
 
     private readonly IBlockDevice _slice;
+    private readonly CpmLayout _layout;
     private readonly byte[] _data;
     private readonly HashSet<int> _dirtyBlocks = [];
     private byte[] _bootSnapshot;
 
-    private CpmFileSystem(IBlockDevice slice, int sliceIndex, bool isPhysical, byte[] data)
+    private CpmFileSystem(IBlockDevice slice, int sliceIndex, bool isPhysical, CpmLayout layout, byte[] data)
     {
         _slice = slice;
+        _layout = layout;
         _data = data;
         SliceIndex = sliceIndex;
         IsPhysical = isPhysical;
-        _bootSnapshot = data.AsSpan(0, BootLength).ToArray();
-        BlockCount = (data.Length - BootLength) / BlockSize;
-        DirectoryBlocks = DirectoryLength / BlockSize;
+        _bootSnapshot = layout.BootLength == 0 ? [] : data.AsSpan(0, layout.BootLength).ToArray();
+        int fitted = (data.Length - layout.BootLength) / layout.BlockSize;
+        BlockCount = Math.Min(layout.BlockCount, fitted);
+        DirectoryBlocks = layout.DirectoryLength / layout.BlockSize;
     }
 
     public int SliceIndex { get; }
@@ -64,14 +67,17 @@ public sealed class CpmFileSystem : IDisposable
     public string DisplayName => _slice.DisplayName;
 
     public static CpmFileSystem Open(IBlockDevice slice, int sliceIndex, bool isPhysical)
+        => Open(slice, sliceIndex, isPhysical, CpmLayout.Hd1k);
+
+    public static CpmFileSystem Open(IBlockDevice slice, int sliceIndex, bool isPhysical, CpmLayout layout)
     {
-        if (slice.Length < BootLength + DirectoryLength)
-            throw new InvalidDataException("The slice is too small to hold an hd1k filesystem.");
+        if (slice.Length < layout.BootLength + layout.DirectoryLength)
+            throw new InvalidDataException("The slice is too small to hold this CP/M filesystem.");
 
         int usable = (int)Math.Min(slice.Length, RomWbwDisk.SliceLength);
         byte[] data = new byte[usable];
         slice.Read(0, data, 0, data.Length);
-        return new CpmFileSystem(slice, sliceIndex, isPhysical, data);
+        return new CpmFileSystem(slice, sliceIndex, isPhysical, layout, data);
     }
 
     public IReadOnlyList<CpmFile> List()
@@ -120,11 +126,11 @@ public sealed class CpmFileSystem : IDisposable
                 if (!used[block])
                     free++;
             }
-            return free * BlockSize;
+            return free * _layout.BlockSize;
         }
     }
 
-    public bool HasCpMDirectory => InspectDirectory(_data.AsSpan(BootLength, DirectoryLength)).IsFormatted;
+    public bool HasCpMDirectory => InspectDirectory(_data.AsSpan(_layout.BootLength, _layout.DirectoryLength), _layout).IsFormatted;
 
     /// <summary>How many 4 KB blocks fit in one hd1k slice after the system tracks.</summary>
     public const int Hd1kBlockCount = (int)((RomWbwDisk.SliceLength - BootLength) / BlockSize);
@@ -136,13 +142,16 @@ public sealed class CpmFileSystem : IDisposable
     /// Bytes that were never formatted fail this, so they are not shown as files.
     /// </summary>
     public static DirectoryCheck InspectDirectory(ReadOnlySpan<byte> directory)
+        => InspectDirectory(directory, CpmLayout.Hd1k);
+
+    public static DirectoryCheck InspectDirectory(ReadOnlySpan<byte> directory, CpmLayout layout)
     {
         int empty = 0;
         int validEntries = 0;
         string? sample = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var names = new List<(string Name, string Type)>();
-        int entries = Math.Min(DirectoryEntries, directory.Length / EntryLength);
+        int entries = Math.Min(layout.DirectoryEntries, directory.Length / EntryLength);
         for (int i = 0; i < entries; i++)
         {
             int at = i * EntryLength;
@@ -154,7 +163,7 @@ public sealed class CpmFileSystem : IDisposable
 
             if (!TryParseName(directory, at, out int user, out string name, out string type))
                 continue;
-            if (!BlockPointersFit(directory, at))
+            if (!BlockPointersFit(directory, at, layout))
                 continue;
 
             validEntries++;
@@ -186,7 +195,7 @@ public sealed class CpmFileSystem : IDisposable
             DirEntry? entry = null;
             foreach (DirEntry candidate in entries)
             {
-                if (candidate.Extent / ExtentsPerEntry == logical / ExtentsPerEntry)
+                if (candidate.Extent / _layout.ExtentsPerEntry == logical / _layout.ExtentsPerEntry)
                 {
                     entry = candidate;
                     break;
@@ -195,14 +204,14 @@ public sealed class CpmFileSystem : IDisposable
             if (entry == null)
                 throw new InvalidDataException($"{file.DisplayName} is missing extent {logical}.");
 
-            int within = pos % EntryCapacity;
-            int pointer = within / BlockSize;
-            int blockOffset = within % BlockSize;
-            int count = Math.Min(BlockSize - blockOffset, size - pos);
+            int within = pos % _layout.EntryCapacity;
+            int pointer = within / _layout.BlockSize;
+            int blockOffset = within % _layout.BlockSize;
+            int count = Math.Min(_layout.BlockSize - blockOffset, size - pos);
             int block = entry.Value.Blocks[pointer];
             if (block != 0)
             {
-                int source = BootLength + block * BlockSize + blockOffset;
+                int source = _layout.BootLength + block * _layout.BlockSize + blockOffset;
                 if (source < 0 || source + count > _data.Length)
                     throw new InvalidDataException($"{file.DisplayName} points outside the slice.");
                 Buffer.BlockCopy(_data, source, data, pos, count);
@@ -218,7 +227,7 @@ public sealed class CpmFileSystem : IDisposable
     /// </summary>
     public void InitializeDirectory()
     {
-        Array.Fill(_data, (byte)0xE5, BootLength, DirectoryLength);
+        Array.Fill(_data, (byte)0xE5, _layout.BootLength, _layout.DirectoryLength);
         for (int block = 0; block < DirectoryBlocks; block++)
             _dirtyBlocks.Add(block);
     }
@@ -232,8 +241,8 @@ public sealed class CpmFileSystem : IDisposable
         if (name.Length == 0)
             throw new ArgumentException("The file name is empty.", nameof(name));
 
-        int blocksNeeded = data.Length == 0 ? 0 : (data.Length + BlockSize - 1) / BlockSize;
-        int entriesNeeded = data.Length == 0 ? 1 : (data.Length + EntryCapacity - 1) / EntryCapacity;
+        int blocksNeeded = data.Length == 0 ? 0 : (data.Length + _layout.BlockSize - 1) / _layout.BlockSize;
+        int entriesNeeded = data.Length == 0 ? 1 : (data.Length + _layout.EntryCapacity - 1) / _layout.EntryCapacity;
         bool stamped = UsesDateStamps();
 
         var reusableSlots = new List<int>();
@@ -252,11 +261,11 @@ public sealed class CpmFileSystem : IDisposable
         }
 
         var freeSlots = new List<int>();
-        for (int i = 0; i < DirectoryEntries && freeSlots.Count < entriesNeeded; i++)
+        for (int i = 0; i < _layout.DirectoryEntries && freeSlots.Count < entriesNeeded; i++)
         {
             if (stamped && i % 4 == 3)
                 continue;
-            byte status = _data[BootLength + i * EntryLength];
+            byte status = _data[_layout.BootLength + i * EntryLength];
             if (status == 0xE5 || reusableSlots.Contains(i))
                 freeSlots.Add(i);
         }
@@ -273,27 +282,27 @@ public sealed class CpmFileSystem : IDisposable
                 freeBlocks.Add(block);
         }
         if (freeBlocks.Count < blocksNeeded)
-            throw new IOException($"Slice does not have {blocksNeeded * BlockSize} free bytes for {name}.{type}.");
+            throw new IOException($"Slice does not have {blocksNeeded * _layout.BlockSize} free bytes for {name}.{type}.");
 
         foreach (int slot in reusableSlots)
-            Array.Fill(_data, (byte)0xE5, BootLength + slot * EntryLength, EntryLength);
+            Array.Fill(_data, (byte)0xE5, _layout.BootLength + slot * EntryLength, EntryLength);
 
         int dataOffset = 0;
         int blockCursor = 0;
         int slotCursor = 0;
         while (slotCursor < entriesNeeded)
         {
-            int chunk = data.Length == 0 ? 0 : Math.Min(EntryCapacity, data.Length - dataOffset);
-            int chunkBlocks = chunk == 0 ? 0 : (chunk + BlockSize - 1) / BlockSize;
-            var pointers = new int[BlocksPerEntry];
+            int chunk = data.Length == 0 ? 0 : Math.Min(_layout.EntryCapacity, data.Length - dataOffset);
+            int chunkBlocks = chunk == 0 ? 0 : (chunk + _layout.BlockSize - 1) / _layout.BlockSize;
+            var pointers = new int[_layout.BlocksPerEntry];
             for (int i = 0; i < chunkBlocks; i++)
             {
                 int block = freeBlocks[blockCursor++];
                 pointers[i] = block;
-                int destination = BootLength + block * BlockSize;
-                Array.Clear(_data, destination, BlockSize);
-                int copy = Math.Min(BlockSize, chunk - i * BlockSize);
-                Buffer.BlockCopy(data, dataOffset + i * BlockSize, _data, destination, copy);
+                int destination = _layout.BootLength + block * _layout.BlockSize;
+                Array.Clear(_data, destination, _layout.BlockSize);
+                int copy = Math.Min(_layout.BlockSize, chunk - i * _layout.BlockSize);
+                Buffer.BlockCopy(data, dataOffset + i * _layout.BlockSize, _data, destination, copy);
                 _dirtyBlocks.Add(block);
             }
 
@@ -330,7 +339,7 @@ public sealed class CpmFileSystem : IDisposable
             if (entry.User != user || entry.Name != name || entry.Type != type)
                 continue;
             found = true;
-            Array.Fill(_data, (byte)0xE5, BootLength + entry.Index * EntryLength, EntryLength);
+            Array.Fill(_data, (byte)0xE5, _layout.BootLength + entry.Index * EntryLength, EntryLength);
             MarkDirectorySlot(entry.Index);
         }
         if (!found)
@@ -347,14 +356,14 @@ public sealed class CpmFileSystem : IDisposable
         if (!BootUntouched())
             throw new IOException("The system tracks of this slice were modified. The write was cancelled.");
 
-        byte[] block = new byte[BlockSize];
+        byte[] block = new byte[_layout.BlockSize];
         foreach (int index in _dirtyBlocks.OrderBy(i => i))
         {
             if (index < 0 || index >= BlockCount)
                 throw new IOException("A dirty block is outside this slice.");
-            int source = BootLength + index * BlockSize;
-            Buffer.BlockCopy(_data, source, block, 0, BlockSize);
-            _slice.Write(source, block, 0, BlockSize);
+            int source = _layout.BootLength + index * _layout.BlockSize;
+            Buffer.BlockCopy(_data, source, block, 0, _layout.BlockSize);
+            _slice.Write(source, block, 0, _layout.BlockSize);
         }
         _dirtyBlocks.Clear();
     }
@@ -402,7 +411,7 @@ public sealed class CpmFileSystem : IDisposable
 
     private bool BootUntouched()
     {
-        for (int i = 0; i < BootLength; i++)
+        for (int i = 0; i < _layout.BootLength; i++)
         {
             if (_data[i] != _bootSnapshot[i])
                 return false;
@@ -412,9 +421,9 @@ public sealed class CpmFileSystem : IDisposable
 
     private bool UsesDateStamps()
     {
-        for (int i = 3; i < DirectoryEntries; i += 4)
+        for (int i = 3; i < _layout.DirectoryEntries; i += 4)
         {
-            if (_data[BootLength + i * EntryLength] == 0x21)
+            if (_data[_layout.BootLength + i * EntryLength] == 0x21)
                 return true;
         }
         return false;
@@ -422,7 +431,7 @@ public sealed class CpmFileSystem : IDisposable
 
     private void WriteEntry(int index, int user, string name, string type, int extent, int recordCount, int lastRecord, int[] pointers)
     {
-        int at = BootLength + index * EntryLength;
+        int at = _layout.BootLength + index * EntryLength;
         Array.Clear(_data, at, EntryLength);
         _data[at] = (byte)user;
         for (int i = 0; i < 8; i++)
@@ -433,28 +442,41 @@ public sealed class CpmFileSystem : IDisposable
         _data[at + 13] = (byte)(lastRecord & 0x7F);
         _data[at + 14] = (byte)((extent >> 5) & 0x3F);
         _data[at + 15] = (byte)recordCount;
-        for (int i = 0; i < BlocksPerEntry; i++)
-        {
-            _data[at + 16 + i * 2] = (byte)(pointers[i] & 0xFF);
-            _data[at + 17 + i * 2] = (byte)((pointers[i] >> 8) & 0xFF);
-        }
+        for (int i = 0; i < _layout.BlocksPerEntry; i++)
+            WritePointer(_data, at, i, pointers[i], _layout);
         MarkDirectorySlot(index);
     }
 
     private void MarkDirectorySlot(int index)
     {
-        _dirtyBlocks.Add((index * EntryLength) / BlockSize);
+        _dirtyBlocks.Add((index * EntryLength) / _layout.BlockSize);
     }
 
-    private static bool BlockPointersFit(ReadOnlySpan<byte> directory, int at)
+    private static bool BlockPointersFit(ReadOnlySpan<byte> directory, int at, CpmLayout layout)
     {
-        for (int b = 0; b < BlocksPerEntry; b++)
+        for (int b = 0; b < layout.BlocksPerEntry; b++)
         {
-            int block = directory[at + 16 + b * 2] | (directory[at + 17 + b * 2] << 8);
-            if (block >= Hd1kBlockCount)
+            if (ReadPointer(directory, at, b, layout) >= layout.BlockCount)
                 return false;
         }
         return true;
+    }
+
+    private static int ReadPointer(ReadOnlySpan<byte> directory, int at, int slot, CpmLayout layout)
+    {
+        int width = layout.WidePointers ? 2 : 1;
+        int block = directory[at + 16 + slot * width];
+        if (layout.WidePointers)
+            block |= directory[at + 17 + slot * width] << 8;
+        return block;
+    }
+
+    private static void WritePointer(byte[] data, int at, int slot, int block, CpmLayout layout)
+    {
+        int width = layout.WidePointers ? 2 : 1;
+        data[at + 16 + slot * width] = (byte)(block & 0xFF);
+        if (layout.WidePointers)
+            data[at + 17 + slot * width] = (byte)((block >> 8) & 0xFF);
     }
 
     private static int SizeOf(DirEntry highest)
@@ -497,18 +519,18 @@ public sealed class CpmFileSystem : IDisposable
 
     private IEnumerable<DirEntry> ReadEntries()
     {
-        for (int i = 0; i < DirectoryEntries; i++)
+        for (int i = 0; i < _layout.DirectoryEntries; i++)
         {
-            int at = BootLength + i * EntryLength;
+            int at = _layout.BootLength + i * EntryLength;
             if (!TryParseName(_data, at, out int user, out string name, out string type))
                 continue;
-            if (!BlockPointersFit(_data, at))
+            if (!BlockPointersFit(_data, at, _layout))
                 continue;
 
             int extent = (_data[at + 12] & 0x1F) | ((_data[at + 14] & 0x3F) << 5);
-            var blocks = new int[BlocksPerEntry];
-            for (int b = 0; b < BlocksPerEntry; b++)
-                blocks[b] = _data[at + 16 + b * 2] | (_data[at + 17 + b * 2] << 8);
+            var blocks = new int[_layout.BlocksPerEntry];
+            for (int b = 0; b < _layout.BlocksPerEntry; b++)
+                blocks[b] = ReadPointer(_data, at, b, _layout);
 
             yield return new DirEntry(
                 i,

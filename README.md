@@ -30,6 +30,8 @@ Only whole slices that fit on the media are offered. A partial slice at the end 
 
 A file that is itself one 8 MiB slice is opened as a single slice. A larger RomWBW disk image is opened as the set of slices inside it.
 
+A Min-eZ card keeps CP/M on its own partition, type `0x52`, of the same 8,388,608 bytes. That filesystem has no system tracks. Its blocks are 8 KB and its directory has 512 entries. The FAT32 partition on the card is not a slice and is left alone. The CP/M partition is labelled Min-eZ unless the files belong to a more specific system. On the card this was checked against, the FAT32 partition entry still covers the first 4 MB of the CP/M partition, so filling that card from Windows can reach the CP/M area.
+
 Slices that contain a recognisable system are labelled from their files: NZ-COM, ZPM3, Z3PLUS, DOS/65, Turbo Pascal, SLR Z80, Games, Z-System, MSX, ROM images, CP/M 3, WordStar, dBASE, QP/M, MBASIC, Music, ZSDOS, CP/M 2.2, or CP/M. A slice with no files is labelled unused.
 
 ## The two panes

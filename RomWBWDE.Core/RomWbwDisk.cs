@@ -18,7 +18,16 @@ public sealed class SliceMap
 
     public bool LooksFormatted { get; init; }
 
+    public string Layout { get; init; } = "hd1k";
+
     public string Caption => CaptionFor(Index, LooksFormatted, FileCount, Label);
+
+    public static string? PreferLabel(string? layout, string? identity, int fileCount)
+    {
+        if (layout == "minez" && fileCount > 0 && identity is null or "CP/M")
+            return "Min-eZ";
+        return identity;
+    }
 
     public override string ToString() => Caption;
 
@@ -38,6 +47,7 @@ public sealed class SliceMap
 public sealed class RomWbwDisk : IDisposable
 {
     public const int PartitionType = 0x2E;
+    public const int MinEzPartitionType = 0x52;
     public const long SliceLength = 8_388_608;
     public const long PrefixLength = 1_048_576;
 
@@ -57,7 +67,7 @@ public sealed class RomWbwDisk : IDisposable
 
     public static RomWbwDisk Open(IBlockDevice device)
     {
-        if (TryReadPartition(device, out long start, out long claimed))
+        if (TryReadPartition(device, PartitionType, out long start, out long claimed))
         {
             long available = Math.Min(claimed, Math.Max(0, device.Length - start));
             int count = (int)(available / SliceLength);
@@ -65,28 +75,36 @@ public sealed class RomWbwDisk : IDisposable
             for (int i = 0; i < count; i++)
             {
                 long offset = start + i * SliceLength;
-                slices.Add(Describe(device, i, offset));
+                slices.Add(Describe(device, i, offset, CpmLayout.Hd1k));
             }
 
             return new RomWbwDisk(device, slices, "hd1k");
         }
 
-        if (device.Length >= CpmFileSystem.BootLength + CpmFileSystem.DirectoryLength
-            && LooksLikeDirectory(device, CpmFileSystem.BootLength))
-        {
-            long length = Math.Min(device.Length, SliceLength);
-            return new RomWbwDisk(device, [Describe(device, 0, 0, length)], "slice");
-        }
+        List<SliceMap> cpm = MineEzPartitions(device);
+        if (cpm.Count > 0)
+            return new RomWbwDisk(device, cpm, "minez");
+
+        bool hd1k = TryReadDirectory(device, CpmLayout.Hd1k.BootLength, CpmLayout.Hd1k, out CpmFileSystem.DirectoryCheck hd);
+        bool minez = TryReadDirectory(device, CpmLayout.MinEz.BootLength, CpmLayout.MinEz, out CpmFileSystem.DirectoryCheck mz);
+        long length = Math.Min(device.Length, SliceLength);
+        if (minez && mz.IsFormatted && mz.FileCount > (hd1k ? hd.FileCount : 0))
+            return new RomWbwDisk(device, [Describe(device, 0, 0, CpmLayout.MinEz, length)], "minez");
+        if (hd1k && hd.IsFormatted)
+            return new RomWbwDisk(device, [Describe(device, 0, 0, CpmLayout.Hd1k, length)], "slice");
+        if (minez && mz.IsFormatted)
+            return new RomWbwDisk(device, [Describe(device, 0, 0, CpmLayout.MinEz, length)], "minez");
 
         throw new InvalidDataException(
-            "This disk has no RomWBW partition (type 0x2E) and is not a single hd1k slice.");
+            "This disk has no RomWBW partition (type 0x2E), no Min-eZ CP/M partition (type 0x52), and is not a single slice.");
     }
 
     public CpmFileSystem OpenSlice(int index)
     {
         SliceMap slice = FindSlice(index);
         var window = new WindowDevice(Device, slice.Offset, slice.Length, Device.DisplayName);
-        return CpmFileSystem.Open(window, slice.Index, Device.IsPhysical);
+        CpmLayout layout = slice.Layout == CpmLayout.MinEz.Name ? CpmLayout.MinEz : CpmLayout.Hd1k;
+        return CpmFileSystem.Open(window, slice.Index, Device.IsPhysical, layout);
     }
 
     /// <summary>
@@ -168,22 +186,48 @@ public sealed class RomWbwDisk : IDisposable
 
     public void Dispose() => Device.Dispose();
 
-    private static bool TryReadPartition(IBlockDevice device, out long start, out long claimed)
+    private static bool TryReadPartition(IBlockDevice device, int type, out long start, out long claimed)
     {
         start = 0;
         claimed = 0;
+        foreach ((long offset, long length) in Partitions(device, type))
+        {
+            start = offset;
+            claimed = length;
+            return start < device.Length;
+        }
+
+        return false;
+    }
+
+    private static List<SliceMap> MineEzPartitions(IBlockDevice device)
+    {
+        var slices = new List<SliceMap>();
+        foreach ((long offset, long length) in Partitions(device, MinEzPartitionType))
+        {
+            if (length != SliceLength || offset + length > device.Length)
+                continue;
+            slices.Add(Describe(device, slices.Count, offset, CpmLayout.MinEz));
+        }
+
+        return slices;
+    }
+
+    private static List<(long Offset, long Length)> Partitions(IBlockDevice device, int type)
+    {
+        var found = new List<(long, long)>();
         if (device.Length < 512)
-            return false;
+            return found;
 
         byte[] mbr = new byte[512];
         device.Read(0, mbr, 0, 512);
         if (mbr[510] != 0x55 || mbr[511] != 0xAA)
-            return false;
+            return found;
 
         for (int i = 0; i < 4; i++)
         {
             int entry = 446 + i * 16;
-            if (mbr[entry + 4] != PartitionType)
+            if (mbr[entry + 4] != type)
                 continue;
 
             uint lba = BitConverter.ToUInt32(mbr, entry + 8);
@@ -191,26 +235,22 @@ public sealed class RomWbwDisk : IDisposable
             if (lba == 0 || sectors == 0)
                 continue;
 
-            start = (long)lba * 512;
-            claimed = (long)sectors * 512;
-            if (start >= device.Length)
-                return false;
-            return true;
+            found.Add(((long)lba * 512, (long)sectors * 512));
         }
 
-        return false;
+        return found;
     }
 
-    private static SliceMap Describe(IBlockDevice device, int index, long offset, long length = SliceLength)
+    private static SliceMap Describe(IBlockDevice device, int index, long offset, CpmLayout layout, long length = SliceLength)
     {
-        byte[] directory = new byte[CpmFileSystem.DirectoryLength];
-        device.Read(offset + CpmFileSystem.BootLength, directory, 0, directory.Length);
-        return DescribeDirectory(index, offset, length, directory);
+        byte[] directory = new byte[layout.DirectoryLength];
+        device.Read(offset + layout.BootLength, directory, 0, directory.Length);
+        return DescribeDirectory(index, offset, length, directory, layout);
     }
 
-    internal static SliceMap DescribeDirectory(int index, long offset, long length, byte[] directory)
+    internal static SliceMap DescribeDirectory(int index, long offset, long length, byte[] directory, CpmLayout layout)
     {
-        CpmFileSystem.DirectoryCheck check = CpmFileSystem.InspectDirectory(directory);
+        CpmFileSystem.DirectoryCheck check = CpmFileSystem.InspectDirectory(directory, layout);
         return new SliceMap
         {
             Index = index,
@@ -219,19 +259,21 @@ public sealed class RomWbwDisk : IDisposable
             FileCount = check.FileCount,
             EmptyEntries = check.EmptyEntries,
             SampleName = check.SampleName,
-            Label = check.Label,
-            LooksFormatted = check.IsFormatted
+            Label = SliceMap.PreferLabel(layout.Name, check.Label, check.FileCount),
+            LooksFormatted = check.IsFormatted,
+            Layout = layout.Name
         };
     }
 
-    private static bool LooksLikeDirectory(IBlockDevice device, long directoryOffset)
+    private static bool TryReadDirectory(IBlockDevice device, long directoryOffset, CpmLayout layout, out CpmFileSystem.DirectoryCheck check)
     {
-        if (directoryOffset + CpmFileSystem.DirectoryLength > device.Length)
+        check = default;
+        if (directoryOffset < 0 || directoryOffset + layout.DirectoryLength > device.Length)
             return false;
 
-        byte[] directory = new byte[CpmFileSystem.DirectoryLength];
+        byte[] directory = new byte[layout.DirectoryLength];
         device.Read(directoryOffset, directory, 0, directory.Length);
-        SliceMap map = DescribeDirectory(0, 0, device.Length, directory);
-        return map.LooksFormatted;
+        check = CpmFileSystem.InspectDirectory(directory, layout);
+        return true;
     }
 }

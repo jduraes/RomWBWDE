@@ -334,6 +334,7 @@ internal sealed class BrowserPanel : UserControl
         _user = null;
         ShowSliceRow(false);
         Reload();
+        FolderMemory.Remember(path);
     }
 
     public void OpenImage(string path)
@@ -584,6 +585,7 @@ internal sealed class BrowserPanel : UserControl
 
         IReadOnlyList<CpmFile> files = _filesystem.List();
         string? label = SliceIdentity.Describe(files.Select(f => (f.Name, f.Type)));
+        label = SliceMap.PreferLabel(_disk?.Kind, label, files.Count);
         choice.Label = label;
         choice.Caption = SliceMap.CaptionFor(choice.Index, _filesystem.HasCpMDirectory, files.Count, label);
         _fillingSlices = true;
@@ -703,7 +705,7 @@ internal sealed class BrowserPanel : UserControl
             : $"slice {_filesystem.SliceIndex} of {_filesystem.DisplayName}";
         string caption = _slices.SelectedItem is SliceChoice choice ? choice.Caption.Trim() : "slice " + _filesystem.SliceIndex;
         DialogResult go = MessageBox.Show(
-            $"Erase {caption} ({files} files) from {target}?\n\nThe whole slice is cleared, including its system tracks, and left unused. The partition table and the other slices are not changed.",
+            $"Erase {caption} ({files} files) from {target}?\n\n{SliceCaution("The whole slice is cleared, including its system tracks, and left unused. The partition table and the other slices are not changed.", "The whole CP/M partition is cleared and left unused. The FAT32 volume and the partition table are not changed.")}",
             "Delete slice",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning);
@@ -833,7 +835,7 @@ internal sealed class BrowserPanel : UserControl
                 ? $"slice {_filesystem.SliceIndex} on the card ({_filesystem.DisplayName})"
                 : $"slice {_filesystem.SliceIndex} of {_filesystem.DisplayName}";
             DialogResult go = MessageBox.Show(
-                $"Write {origin.Caption.Trim()} from {Path.GetFileName(dialog.FileName)} into {target}?\n\nOnly this slice is replaced, including its system tracks. The partition table and the other slices are not changed.",
+                $"Write {origin.Caption.Trim()} from {Path.GetFileName(dialog.FileName)} into {target}?\n\n{SliceCaution("Only this slice is replaced, including its system tracks. The partition table and the other slices are not changed.", "Only this CP/M partition is replaced. The FAT32 volume and the partition table are not changed.")}",
                 "Write slice",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
@@ -1099,6 +1101,8 @@ internal sealed class BrowserPanel : UserControl
         _subtitle.Text = _filesystem.DisplayName;
         _tips.SetToolTip(_title, _subtitle.Text);
     }
+
+    private string SliceCaution(string hd1k, string minez) => _disk?.Kind == "minez" ? minez : hd1k;
 
     private string CurrentLabel()
     {

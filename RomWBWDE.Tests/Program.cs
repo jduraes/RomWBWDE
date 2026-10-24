@@ -24,6 +24,8 @@ internal static class Program
         ClearingOneSliceLeavesTheOthers(slicePath);
         ExtractedSliceIsARomWbwImage(slicePath);
         DateStampSlotsStayReserved();
+        MinEzImageReadsHello();
+        MinEzPartitionLeavesTheFatArea();
         Console.WriteLine(_failed == 0 ? "All checks passed." : _failed + " checks failed.");
         return _failed == 0 ? 0 : 1;
     }
@@ -298,6 +300,71 @@ internal static class Program
         using CpmFileSystem check = CpmFileSystem.Open(new WindowDevice(device, 0, blank.Length, "blank"), 0, false);
         CpmFile file = Find(check.List(), 0, "STAMP", "COM");
         Check(check.ReadFile(file).SequenceEqual(new byte[] { 9, 8, 7 }), "file written beside the stamp");
+    }
+
+    private static void MinEzImageReadsHello()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "minez-cpm.img");
+        Check(File.Exists(path), "min-ez image is present");
+        if (!File.Exists(path))
+            return;
+
+        using var device = new FileBlockDevice(path, writable: false);
+        using RomWbwDisk disk = RomWbwDisk.Open(device);
+        Check(disk.Kind == "minez", "raw min-ez image kind " + disk.Kind);
+        Check(disk.Slices.Count == 1, "raw min-ez image is one partition");
+        Check(disk.Slices[0].Caption == "00    Min-eZ", "min-ez caption " + disk.Slices[0].Caption);
+        using CpmFileSystem fs = disk.OpenSlice(0);
+        CpmFile hello = Find(fs.List(), 0, "HELLO", "TXT");
+        Check(hello.Size == 256, "HELLO.TXT size " + hello.Size);
+        byte[] body = fs.ReadFile(hello);
+        string text = System.Text.Encoding.ASCII.GetString(body);
+        Check(text.StartsWith("Hello from the Min-eZ UART1 XMODEM workflow!"), "HELLO.TXT text");
+    }
+
+    private static void MinEzPartitionLeavesTheFatArea()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "minez-cpm.img");
+        if (!File.Exists(path))
+            return;
+
+        byte[] cpm = File.ReadAllBytes(path);
+        int prefix = (int)RomWbwDisk.PrefixLength;
+        var image = new byte[prefix + cpm.Length];
+        Array.Fill(image, (byte)0xA5);
+        image[510] = 0x55;
+        image[511] = 0xAA;
+        image[446 + 4] = 0x0C;
+        BitConverter.GetBytes(1).CopyTo(image, 446 + 8);
+        BitConverter.GetBytes(prefix / 512 - 1).CopyTo(image, 446 + 12);
+        image[462 + 4] = RomWbwDisk.MinEzPartitionType;
+        BitConverter.GetBytes(prefix / 512).CopyTo(image, 462 + 8);
+        BitConverter.GetBytes(cpm.Length / 512).CopyTo(image, 462 + 12);
+        cpm.CopyTo(image, prefix);
+        byte[] before = (byte[])image.Clone();
+
+        var card = new MemoryDevice(image, "minez-card.img");
+        using (RomWbwDisk disk = RomWbwDisk.Open(card))
+        {
+            Check(disk.Kind == "minez", "partitioned card is min-ez");
+            Check(disk.Slices.Count == 1, "fat partition is not offered, got " + disk.Slices.Count);
+            using CpmFileSystem fs = disk.OpenSlice(0);
+            byte[] hello = fs.ReadFile(Find(fs.List(), 0, "HELLO", "TXT"));
+            byte[] wide = new byte[70 * 1024];
+            for (int i = 0; i < wide.Length; i++)
+                wide[i] = (byte)(i * 17);
+            fs.WriteFile(0, "WIDE", "BIN", wide);
+            fs.Save();
+            Check(fs.ReadFile(Find(fs.List(), 0, "WIDE", "BIN")).SequenceEqual(wide), "70 KB file round-trip");
+            Check(fs.ReadFile(Find(fs.List(), 0, "HELLO", "TXT")).SequenceEqual(hello), "HELLO.TXT unchanged after write");
+        }
+
+        Check(image.AsSpan(0, prefix).SequenceEqual(before.AsSpan(0, prefix)), "FAT area and partition table were not written");
+        foreach ((long offset, int count) in card.Writes)
+        {
+            Check(offset >= prefix, "min-ez write starts in the CP/M partition: " + offset);
+            Check(offset + count <= prefix + cpm.Length, "min-ez write stays in the CP/M partition: " + (offset + count));
+        }
     }
 
     private static CpmFile Find(IReadOnlyList<CpmFile> files, int user, string name, string type)
