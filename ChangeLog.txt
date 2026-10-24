@@ -1,5 +1,10 @@
 # Changelog
-All notable changes to this project will be documented in this file.
+
+RomWBW Disk Explorer (RomWBWDE) is a spiritual evolution of this project.
+The original program, RC2014 CP/M Disk Explorer by Dirk Prins, remains in Src.
+https://github.com/ForNextSoftwareDevelopment/RC2014CpmDskExp
+
+All notable changes to the original project are recorded below.
 
 ## [1.0] - 2023-04-24
 ### Initial Release
