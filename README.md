@@ -12,9 +12,11 @@ Before you write anything, take an image of the whole card and keep it somewhere
 
 ## Running it
 
-The program needs the .NET 8 desktop runtime, and Windows administrator rights, because it opens the card as a raw disk. Double-click `RomWBWDE.cmd` in this directory. It builds the Release program and starts it. Windows will ask for permission.
+The program needs the .NET 8 desktop runtime, and Windows administrator rights, because it opens the card as a raw disk.
 
-From a terminal:
+A built copy is attached to the [releases](https://github.com/jduraes/RomWBWDE/releases). That download is optional. Unzip it and run `RomWBWDE.exe`. Windows will ask for permission.
+
+To build it yourself, double-click `RomWBWDE.cmd` in this directory. It publishes the program into `Release` and starts it. From a terminal:
 
 ```
 dotnet run --project RomWBWDE
@@ -83,6 +85,8 @@ dotnet build RomWBWDE.sln -c Release
 ```
 dotnet run --project RomWBWDE.Tests -c Release
 ```
+
+A build writes `bin` and `obj` under the project it compiles, and a publish writes `Release` at the top of this directory. Those folders are listed in `.gitignore`. They stay on your machine. The copy offered for download is the one attached to a GitHub release.
 
 ## Licence
 

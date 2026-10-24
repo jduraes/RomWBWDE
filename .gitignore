@@ -1,5 +1,13 @@
-bin/
-obj/
+# Local build output. Each project writes its own bin, obj, Debug and Release folders.
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Pp]ublish/
+artifacts/
+TestResults/
+*.pdb
+
 .vs/
 *.user
-TestResults/
+*.suo

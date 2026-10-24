@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo Building RomWBW Disk Explorer...
-dotnet build "RomWBWDE\RomWBWDE.csproj" -c Release --nologo
+dotnet publish "RomWBWDE\RomWBWDE.csproj" -c Release -r win-x64 --self-contained false -o "Release" --nologo
 if errorlevel 1 (
     echo.
     echo Build failed.
@@ -11,7 +11,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "EXE=%~dp0RomWBWDE\bin\Release\net8.0-windows\RomWBWDE.exe"
+rem The program is in Release\. Drop the per-project build folders.
+rmdir /s /q "RomWBWDE\bin" 2>nul
+rmdir /s /q "RomWBWDE\obj" 2>nul
+rmdir /s /q "RomWBWDE.Core\bin" 2>nul
+rmdir /s /q "RomWBWDE.Core\obj" 2>nul
+
+set "EXE=%~dp0Release\RomWBWDE.exe"
 if not exist "%EXE%" (
     echo Could not find:
     echo   %EXE%
