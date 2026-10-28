@@ -21,6 +21,7 @@ internal sealed class BrowserPanel : UserControl
     private readonly FlowLayoutPanel _nav;
     private readonly Button _writeSlice;
     private readonly Button _extractSlice;
+    private readonly Button _renameSlice;
     private readonly Button _deleteSlice;
     private readonly Button _previousSlice;
     private readonly Button _nextSlice;
@@ -121,16 +122,19 @@ internal sealed class BrowserPanel : UserControl
         _users.SelectedIndexChanged += UserChanged;
         _writeSlice = MakeButton("Write slice", (_, _) => WriteSlice());
         _extractSlice = MakeButton("Extract slice", (_, _) => ExtractSlice());
+        _renameSlice = MakeButton("Rename slice", (_, _) => RenameSlice());
         _deleteSlice = MakeButton("Delete slice", (_, _) => DeleteSlice());
         _previousSlice = MakeButton("Previous", (_, _) => StepSlice(-1));
         _nextSlice = MakeButton("Next", (_, _) => StepSlice(1));
         _writeSlice.Margin = new Padding(0, 2, 6, 0);
         _extractSlice.Margin = new Padding(0, 2, 6, 0);
+        _renameSlice.Margin = new Padding(0, 2, 6, 0);
         _deleteSlice.Margin = new Padding(0, 2, 6, 0);
         _previousSlice.Margin = new Padding(0, 2, 6, 0);
         _nextSlice.Margin = new Padding(0, 2, 0, 0);
         _writeSlice.Padding = new Padding(14, 1, 14, 1);
         _extractSlice.Padding = new Padding(14, 1, 14, 1);
+        _renameSlice.Padding = new Padding(14, 1, 14, 1);
         _deleteSlice.Padding = new Padding(14, 1, 14, 1);
         _previousSlice.Padding = new Padding(14, 1, 14, 1);
         _nextSlice.Padding = new Padding(14, 1, 14, 1);
@@ -157,6 +161,7 @@ internal sealed class BrowserPanel : UserControl
         };
         _sliceActions.Controls.Add(_writeSlice);
         _sliceActions.Controls.Add(_extractSlice);
+        _sliceActions.Controls.Add(_renameSlice);
         _sliceActions.Controls.Add(_deleteSlice);
         _sliceRow = new Panel { Dock = DockStyle.Top, Height = 36, Visible = false };
         _sliceRow.Controls.Add(_sliceLabel);
@@ -289,6 +294,9 @@ internal sealed class BrowserPanel : UserControl
 
     public string? Folder => _folder;
 
+    /// <summary>The other pane's highlighted Windows file, when Write slice should use it.</summary>
+    public Func<string?>? HighlightedFile { get; set; }
+
     public bool IsPhysical => _filesystem?.IsPhysical == true;
 
     public bool IsDirty => _filesystem?.IsDirty == true;
@@ -418,6 +426,15 @@ internal sealed class BrowserPanel : UserControl
             entries.Add((row.Path, row.IsDirectory));
         }
         return entries;
+    }
+
+    public string? HighlightedHostFile()
+    {
+        if (_folder == null || _files.SelectedItems.Count != 1)
+            return null;
+        if (_files.SelectedItems[0].Tag is not Row row || row.IsDirectory || row.IsParent || row.Path == null)
+            return null;
+        return row.Path;
     }
 
     public List<string> SelectedHostFiles()
@@ -584,10 +601,20 @@ internal sealed class BrowserPanel : UserControl
             return;
 
         IReadOnlyList<CpmFile> files = _filesystem.List();
-        string? label = SliceIdentity.Describe(files.Select(f => (f.Name, f.Type)));
-        label = SliceMap.PreferLabel(_disk?.Kind, label, files.Count);
+        string? stored = ReadStoredName(choice.Index);
+        choice.VolumeLabel = stored;
+        string? label = stored;
+        if (string.IsNullOrEmpty(label))
+        {
+            label = SliceIdentity.Describe(files.Select(f => (f.Name, f.Type)));
+            label = SliceMap.PreferLabel(_disk?.Kind, label, files.Count);
+        }
         choice.Label = label;
-        choice.Caption = SliceMap.CaptionFor(choice.Index, _filesystem.HasCpMDirectory, files.Count, label);
+        bool guessed = string.IsNullOrEmpty(choice.VolumeLabel)
+            && !string.IsNullOrEmpty(label)
+            && _filesystem.HasCpMDirectory
+            && files.Count > 0;
+        choice.Caption = SliceMap.CaptionFor(choice.Index, _filesystem.HasCpMDirectory, files.Count, label, guessed);
         _fillingSlices = true;
         int index = _slices.SelectedIndex;
         _slices.Items[index] = choice;
@@ -618,7 +645,13 @@ internal sealed class BrowserPanel : UserControl
         _fillingSlices = true;
         _slices.Items.Clear();
         foreach (SliceMap slice in disk.Slices)
-            _slices.Items.Add(new SliceChoice { Index = slice.Index, Caption = slice.Caption, Label = slice.Label });
+            _slices.Items.Add(new SliceChoice
+            {
+                Index = slice.Index,
+                Caption = slice.Caption,
+                Label = slice.Label,
+                VolumeLabel = slice.VolumeLabel
+            });
         _fillingSlices = false;
         if (_slices.Items.Count == 0)
         {
@@ -672,6 +705,7 @@ internal sealed class BrowserPanel : UserControl
         bool any = _sliceRow.Visible && _slices.Items.Count > 0;
         _writeSlice.Enabled = any && _filesystem != null;
         _extractSlice.Enabled = any && _filesystem != null;
+        _renameSlice.Enabled = any && _filesystem != null && CurrentLayout() != "minez";
         _deleteSlice.Enabled = any && _filesystem != null;
         _previousSlice.Enabled = any && _slices.SelectedIndex > 0;
         _nextSlice.Enabled = any && _slices.SelectedIndex >= 0 && _slices.SelectedIndex < _slices.Items.Count - 1;
@@ -741,25 +775,157 @@ internal sealed class BrowserPanel : UserControl
         string? label = _slices.SelectedItem is SliceChoice choice ? choice.Label : null;
         using var dialog = new SaveFileDialog
         {
-            Title = "Save this slice as an 8 MiB RomWBW image",
+            Title = "Save this slice as a RomWBW image",
             Filter = "Slice image|*.img|All files|*.*",
             FileName = SliceFileName(_filesystem.SliceIndex, label),
-            InitialDirectory = _folder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            InitialDirectory = DialogFolder(),
             OverwritePrompt = true
         };
         if (dialog.ShowDialog(FindForm()) != DialogResult.OK)
             return;
+        RememberDialogFolder(dialog.FileName);
 
         try
         {
             _status.Text = "Saving slice " + _filesystem.SliceIndex + "…";
             _disk.SaveSlice(_filesystem.SliceIndex, dialog.FileName);
-            _status.Text = $"Saved slice {_filesystem.SliceIndex} to {dialog.FileName}. It is an 8 MiB RomWBW slice image.";
+            _status.Text = $"Saved slice {_filesystem.SliceIndex} to {dialog.FileName}. It is a RomWBW slice image.";
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Extract slice", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private void RenameSlice()
+    {
+        BecameActive?.Invoke(this, EventArgs.Empty);
+        if (_disk == null || _filesystem == null || _slices.SelectedItem is not SliceChoice choice)
+        {
+            MessageBox.Show("Open the card and choose a slice.", "Rename slice", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (!_disk.Device.CanWrite)
+        {
+            MessageBox.Show("This disk was opened read-only.", "Rename slice", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (CurrentLayout() == "minez")
+        {
+            MessageBox.Show("This partition has no slice name to change.", "Rename slice", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        string? entered = AskSliceName(choice.Label);
+        if (entered == null)
+            return;
+
+        try
+        {
+            string stored = SliceVolume.Normalize(entered);
+            _status.Text = "Renaming slice " + choice.Index + "…";
+            _disk.RenameSlice(choice.Index, stored);
+            RefreshCaption();
+            _status.Text = $"Renamed slice {choice.Index:00} to {stored}.";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Rename slice", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private string DialogFolder()
+    {
+        if (!string.IsNullOrEmpty(_folder) && Directory.Exists(_folder))
+            return _folder;
+        return FolderMemory.Recall();
+    }
+
+    private static void RememberDialogFolder(string path)
+    {
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+            FolderMemory.Remember(directory);
+    }
+
+    private string? ReadStoredName(int index)
+    {
+        if (_disk == null)
+            return null;
+        foreach (SliceMap slice in _disk.Slices)
+        {
+            if (slice.Index == index)
+                return SliceVolume.Read(_disk.Device, slice.Offset);
+        }
+        return null;
+    }
+
+    private string? CurrentLayout()
+    {
+        if (_disk == null || _slices.SelectedItem is not SliceChoice choice)
+            return null;
+        foreach (SliceMap slice in _disk.Slices)
+        {
+            if (slice.Index == choice.Index)
+                return slice.Layout;
+        }
+        return null;
+    }
+
+    private string? AskSliceName(string? current)
+    {
+        using var dialog = new Form
+        {
+            Text = "Rename slice",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(420, 148),
+            MinimizeBox = false,
+            MaximizeBox = false,
+            Font = new Font("Segoe UI", 9f),
+            BackColor = Color.White,
+            ForeColor = Color.Black
+        };
+        var hint = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 48,
+            Padding = new Padding(12, 10, 12, 0),
+            Text = "The name is stored in this slice. Files are left as they are. Up to 16 characters."
+        };
+        var box = new TextBox
+        {
+            Dock = DockStyle.Top,
+            Margin = new Padding(12, 4, 12, 0),
+            MaxLength = SliceVolume.LabelLength,
+            Text = current ?? ""
+        };
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            FlowDirection = FlowDirection.RightToLeft,
+            Height = 40,
+            Padding = new Padding(8, 6, 8, 0)
+        };
+        var ok = new Button { Text = "Rename", DialogResult = DialogResult.OK, AutoSize = true };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
+        buttons.Controls.Add(ok);
+        buttons.Controls.Add(cancel);
+        var pad = new Panel { Dock = DockStyle.Top, Height = 8 };
+        dialog.Controls.Add(buttons);
+        dialog.Controls.Add(box);
+        dialog.Controls.Add(pad);
+        dialog.Controls.Add(hint);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+        dialog.Shown += (_, _) =>
+        {
+            box.SelectAll();
+            box.Focus();
+        };
+        if (dialog.ShowDialog(FindForm()) != DialogResult.OK)
+            return null;
+        return box.Text;
     }
 
     private static string SliceFileName(int index, string? label)
@@ -799,19 +965,24 @@ internal sealed class BrowserPanel : UserControl
             return;
         }
 
-        using var dialog = new OpenFileDialog
+        string? imagePath = HighlightedFile?.Invoke();
+        if (string.IsNullOrEmpty(imagePath))
         {
-            Title = "RomWBW slice image to write into this slice",
-            Filter = "Disk image|*.img;*.cpm;*.bin|All files|*.*",
-            InitialDirectory = _folder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-        };
-        if (dialog.ShowDialog(FindForm()) != DialogResult.OK)
-            return;
+            using var dialog = new OpenFileDialog
+            {
+                Title = "RomWBW slice image to write into this slice",
+                Filter = "Disk image|*.img;*.cpm;*.bin|All files|*.*",
+                InitialDirectory = DialogFolder()
+            };
+            if (dialog.ShowDialog(FindForm()) != DialogResult.OK)
+                return;
+            imagePath = dialog.FileName;
+        }
 
         RomWbwDisk? source = null;
         try
         {
-            var image = new FileBlockDevice(dialog.FileName, writable: false);
+            var image = new FileBlockDevice(imagePath, writable: false);
             try
             {
                 source = RomWbwDisk.Open(image);
@@ -822,20 +993,30 @@ internal sealed class BrowserPanel : UserControl
                 throw;
             }
 
-            if (source.Slices.Count == 0 || source.Slices.Any(slice => slice.Length != RomWbwDisk.SliceLength))
-                throw new IOException("The image has to be one 8 MiB slice, or a RomWBW hard disk made of full 8 MiB slices.");
+            long want = RomWbwDisk.SliceLength;
+            if (_disk != null)
+            {
+                foreach (SliceMap slice in _disk.Slices)
+                {
+                    if (slice.Index == _filesystem.SliceIndex)
+                        want = slice.Length;
+                }
+            }
+            if (source.Slices.Count == 0 || source.Slices.Any(slice => slice.Length != want))
+                throw new IOException("The image has to be one slice of this size, or a disk made of slices of this size.");
 
             SliceMap? origin = source.Slices.Count == 1
                 ? source.Slices[0]
-                : ChooseSourceSlice(source, Path.GetFileName(dialog.FileName));
+                : ChooseSourceSlice(source, Path.GetFileName(imagePath));
             if (origin == null)
                 return;
+            RememberDialogFolder(imagePath);
 
             string target = _filesystem.IsPhysical
                 ? $"slice {_filesystem.SliceIndex} on the card ({_filesystem.DisplayName})"
                 : $"slice {_filesystem.SliceIndex} of {_filesystem.DisplayName}";
             DialogResult go = MessageBox.Show(
-                $"Write {origin.Caption.Trim()} from {Path.GetFileName(dialog.FileName)} into {target}?\n\n{SliceCaution("Only this slice is replaced, including its system tracks. The partition table and the other slices are not changed.", "Only this CP/M partition is replaced. The FAT32 volume and the partition table are not changed.")}",
+                $"Write {origin.Caption.Trim()} from {Path.GetFileName(imagePath)} into {target}?\n\n{SliceCaution("Only this slice is replaced, including its system tracks. The partition table and the other slices are not changed.", "Only this CP/M partition is replaced. The FAT32 volume and the partition table are not changed.")}",
                 "Write slice",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
@@ -1047,10 +1228,30 @@ internal sealed class BrowserPanel : UserControl
             if (entry is DirectoryInfo dir)
                 _files.Items.Add(Item(dir.Name, "", dir.LastWriteTime.ToString("g"), new Row { Path = dir.FullName, IsDirectory = true }, folder: true));
             else if (entry is FileInfo file)
-                _files.Items.Add(Item(file.Name, DriveDescription.FormatSize(file.Length), file.LastWriteTime.ToString("g"), new Row { Path = file.FullName }, folder: false));
+            {
+                ListViewItem item = Item(file.Name, DriveDescription.FormatSize(file.Length), file.LastWriteTime.ToString("g"), new Row { Path = file.FullName }, folder: false);
+                if (IsClearImageFile(file.FullName))
+                    item.ForeColor = Color.FromArgb(0, 102, 204);
+                _files.Items.Add(item);
+            }
         }
         _up.Enabled = parent != null;
         _status.Text = $"{_files.Items.Count} items";
+    }
+
+    private static bool IsClearImageFile(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).Length < RomWbwDisk.SliceLength)
+                return false;
+            using var device = new FileBlockDevice(path, writable: false);
+            return RomWbwDisk.IsClearImage(device);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
     }
 
     private void FillSlice()
@@ -1164,7 +1365,7 @@ internal sealed class BrowserPanel : UserControl
         BecameActive?.Invoke(this, EventArgs.Empty);
         using var dialog = new FolderBrowserDialog
         {
-            InitialDirectory = _folder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            InitialDirectory = DialogFolder(),
             UseDescriptionForTitle = true,
             Description = "Folder to copy to and from"
         };
@@ -1179,10 +1380,11 @@ internal sealed class BrowserPanel : UserControl
         {
             Title = "Open a RomWBW disk image or a single slice",
             Filter = "Disk image|*.img;*.cpm;*.bin|All files|*.*",
-            InitialDirectory = _folder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            InitialDirectory = DialogFolder()
         };
         if (dialog.ShowDialog(FindForm()) != DialogResult.OK)
             return;
+        RememberDialogFolder(dialog.FileName);
         try
         {
             OpenImage(dialog.FileName);
@@ -1732,6 +1934,8 @@ internal sealed class BrowserPanel : UserControl
         public int Index { get; init; }
 
         public string? Label { get; set; }
+
+        public string? VolumeLabel { get; set; }
 
         public string Caption { get; set; } = "";
 

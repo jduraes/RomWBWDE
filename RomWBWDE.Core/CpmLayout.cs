@@ -17,6 +17,8 @@ public readonly record struct CpmLayout
 
     public int BlockCount { get; init; }
 
+    public int SliceBytes { get; init; }
+
     public int DirectoryLength => DirectoryEntries * 32;
 
     public int DirectoryBlocks => DirectoryLength / BlockSize;
@@ -35,7 +37,20 @@ public readonly record struct CpmLayout
         BlockSize = CpmFileSystem.BlockSize,
         DirectoryEntries = CpmFileSystem.DirectoryEntries,
         ExtentsPerEntry = CpmFileSystem.ExtentsPerEntry,
-        BlockCount = CpmFileSystem.Hd1kBlockCount
+        BlockCount = CpmFileSystem.Hd1kBlockCount,
+        SliceBytes = (int)RomWbwDisk.SliceLength
+    };
+
+    /// <summary>RomWBW hd512: 128 KB system tracks, 4 KB blocks, 512 directory entries, 8,519,680-byte slices.</summary>
+    public static CpmLayout Hd512 { get; } = new()
+    {
+        Name = "hd512",
+        BootLength = 16 * 16 * 512,
+        BlockSize = 4096,
+        DirectoryEntries = 512,
+        ExtentsPerEntry = 2,
+        BlockCount = 2048,
+        SliceBytes = (int)RomWbwDisk.Hd512SliceLength
     };
 
     /// <summary>Min-eZ 8 MB partition: no system tracks, 8 KB blocks, 512 directory entries.</summary>
@@ -46,6 +61,14 @@ public readonly record struct CpmLayout
         BlockSize = 8192,
         DirectoryEntries = 512,
         ExtentsPerEntry = 4,
-        BlockCount = 8388608 / 8192
+        BlockCount = 8388608 / 8192,
+        SliceBytes = 8388608
+    };
+
+    public static CpmLayout For(string name) => name switch
+    {
+        "hd512" => Hd512,
+        "minez" => MinEz,
+        _ => Hd1k
     };
 }

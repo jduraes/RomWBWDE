@@ -1,3 +1,4 @@
+using System.Text;
 using RomWBWDE;
 
 namespace RomWBWDE.Tests;
@@ -26,6 +27,11 @@ internal static class Program
         DateStampSlotsStayReserved();
         MinEzImageReadsHello();
         MinEzPartitionLeavesTheFatArea();
+        VolumeLabelBeatsTheFileGuess(slicePath);
+        Hd512UsesItsOwnSlice(slicePath);
+        RecognizesClearImages(slicePath);
+        RenameTouchesOnlyTheName(slicePath);
+        RejectsASliceTheDiskDidNotKeep(slicePath);
         Console.WriteLine(_failed == 0 ? "All checks passed." : _failed + " checks failed.");
         return _failed == 0 ? 0 : 1;
     }
@@ -89,6 +95,76 @@ internal static class Program
         var roms = Enumerable.Range(0, 8).Select(i => ($"GAME{i:00}", "ROM"));
         Check(SliceIdentity.Describe(roms) == "ROM images", "roms " + SliceIdentity.Describe(roms));
         Check(SliceIdentity.Describe([]) == null, "no files");
+
+        var ordinary = new List<(string Name, string Type)>
+        {
+            ("MBASIC", "COM"), ("PIP", "COM"), ("STAT", "COM"), ("SYSGEN", "COM"), ("CPM", "SYS")
+        };
+        ordinary.AddRange(Enumerable.Range(0, 18).Select(i => ($"TUNE{i:00}", "PT3")));
+        ordinary.AddRange(Enumerable.Range(0, 40).Select(i => ($"FILE{i:00}", "COM")));
+        Check(SliceIdentity.Describe(ordinary) == "CP/M 2.2", "mbasic and music demos stay CP/M 2.2, got " + SliceIdentity.Describe(ordinary));
+        Check(SliceIdentity.Describe([("BASCOM", "COM"), ("BRUN", "COM"), ("MBASIC", "COM")]) == "MBASIC", "basic compiler");
+        Check(SliceIdentity.Describe([("ZSYS", "SYS"), ("ZSCONFIG", "COM"), ("PIP", "COM"), ("STAT", "COM"), ("MBASIC", "COM")]) == "ZSDOS", "zsdos");
+        Check(SliceIdentity.Describe([("NZCOM", "COM"), ("ZSYS", "SYS"), ("MBASIC", "COM"), ("PIP", "COM")]) == "NZ-COM", "nz-com over zsdos");
+        var tunes = Enumerable.Range(0, 10).Select(i => ($"TUNE{i:00}", "PT3")).Append(("NOTES", "TXT"));
+        Check(SliceIdentity.Describe(tunes) == "Music", "music disk " + SliceIdentity.Describe(tunes));
+        CatalogGuesses();
+    }
+
+    private static void CatalogGuesses()
+    {
+        string directory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "RomWBW", "Source", "Images"));
+        if (!Directory.Exists(directory))
+            directory = @"C:\Users\miguel\Documents\development\RomWBW\Source\Images";
+        if (!Directory.Exists(directory))
+            return;
+
+        var expected = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["cpm22"] = "CP/M 2.2",
+            ["zsdos"] = "ZSDOS",
+            ["nzcom"] = "NZ-COM",
+            ["cpm3"] = "CP/M 3",
+            ["zpm3"] = "ZPM3",
+            ["z3plus"] = "Z3PLUS",
+            ["wp"] = "WordStar",
+            ["games"] = "Games",
+            ["tpascal"] = "Turbo Pascal",
+            ["dos65"] = "DOS/65",
+            ["z80asm"] = "SLR Z80",
+            ["qpm"] = "QP/M",
+            ["bascomp"] = "MBASIC",
+            ["msxroms1"] = "ROM images",
+            ["msxroms2"] = "ROM images",
+            ["fortran"] = "Fortran",
+            ["cowgol"] = "Cowgol",
+            ["cobol"] = "COBOL",
+            ["hitechc"] = "Hi-Tech C",
+            ["aztecc"] = "Aztec C",
+            ["bp"] = "BPBIOS",
+            ["infocom"] = "Infocom",
+            ["blank"] = null
+        };
+
+        foreach ((string disk, string? want) in expected)
+        {
+            string path = Path.Combine(directory, "hd1k_" + disk + ".cat");
+            if (!File.Exists(path))
+                continue;
+            var files = new List<(string Name, string Type)>();
+            foreach (string line in File.ReadLines(path))
+            {
+                if (line.Length < 12 || line[8] != '.')
+                    continue;
+                string name = line[..8].Trim();
+                string type = line.Substring(9, 3).Trim();
+                if (name.Length == 0)
+                    continue;
+                files.Add((name, type));
+            }
+            string? got = SliceIdentity.Describe(files);
+            Check(got == want, disk + " guess " + (got ?? "(none)"));
+        }
     }
 
     private static void RoundTripOnCopy(string slicePath)
@@ -311,9 +387,10 @@ internal static class Program
 
         using var device = new FileBlockDevice(path, writable: false);
         using RomWbwDisk disk = RomWbwDisk.Open(device);
+        Check(RomWbwDisk.IsClearImage(device), "raw min-ez image is recognized");
         Check(disk.Kind == "minez", "raw min-ez image kind " + disk.Kind);
         Check(disk.Slices.Count == 1, "raw min-ez image is one partition");
-        Check(disk.Slices[0].Caption == "00    Min-eZ", "min-ez caption " + disk.Slices[0].Caption);
+        Check(disk.Slices[0].Caption == "00    Min-eZ*", "min-ez caption " + disk.Slices[0].Caption);
         using CpmFileSystem fs = disk.OpenSlice(0);
         CpmFile hello = Find(fs.List(), 0, "HELLO", "TXT");
         Check(hello.Size == 256, "HELLO.TXT size " + hello.Size);
@@ -346,6 +423,7 @@ internal static class Program
         var card = new MemoryDevice(image, "minez-card.img");
         using (RomWbwDisk disk = RomWbwDisk.Open(card))
         {
+            Check(RomWbwDisk.IsClearImage(card), "partitioned min-ez image is recognized");
             Check(disk.Kind == "minez", "partitioned card is min-ez");
             Check(disk.Slices.Count == 1, "fat partition is not offered, got " + disk.Slices.Count);
             using CpmFileSystem fs = disk.OpenSlice(0);
@@ -365,6 +443,214 @@ internal static class Program
             Check(offset >= prefix, "min-ez write starts in the CP/M partition: " + offset);
             Check(offset + count <= prefix + cpm.Length, "min-ez write stays in the CP/M partition: " + (offset + count));
         }
+    }
+
+    private static void VolumeLabelBeatsTheFileGuess(string slicePath)
+    {
+        byte[] image = File.ReadAllBytes(slicePath);
+        StampVolume(image, "CP/M 2.2");
+        using RomWbwDisk disk = RomWbwDisk.Open(new MemoryDevice(image, "labelled"));
+        Check(disk.Kind == "slice", "labelled image stays one hd1k slice");
+        Check(disk.Slices[0].Label == "CP/M 2.2", "volume label wins, got " + disk.Slices[0].Label);
+        Check(disk.Slices[0].VolumeLabel == "CP/M 2.2", "stored volume label");
+        using CpmFileSystem fs = disk.OpenSlice(0);
+        Check(fs.List().Count == 362, "label change does not hide files");
+
+        StampVolume(image, "Unlabeled");
+        using RomWbwDisk plain = RomWbwDisk.Open(new MemoryDevice(image, "plain"));
+        Check(plain.Slices[0].VolumeLabel == null, "Unlabeled is not shown");
+        Check(plain.Slices[0].Label == "NZ-COM", "file guess returns, got " + plain.Slices[0].Label);
+
+        StampVolume(image, "Turbo Pascal", signature: false);
+        using RomWbwDisk unsigned = RomWbwDisk.Open(new MemoryDevice(image, "unsigned"));
+        Check(unsigned.Slices[0].VolumeLabel == "Turbo Pascal", "name without the boot signature, got " + unsigned.Slices[0].VolumeLabel);
+
+        for (int i = 0; i < SliceVolume.LabelLength; i++)
+            image[SliceVolume.LabelOffset + i] = 0xE5;
+        using RomWbwDisk erased = RomWbwDisk.Open(new MemoryDevice(image, "erased-name"));
+        Check(erased.Slices[0].VolumeLabel == null, "an empty name is not a label");
+        Check(erased.Slices[0].Label == "NZ-COM", "file guess used when the name is absent, got " + erased.Slices[0].Label);
+    }
+
+    private static void Hd512UsesItsOwnSlice(string slicePath)
+    {
+        int sliceBytes = (int)RomWbwDisk.Hd512SliceLength;
+        byte[] image = new byte[sliceBytes * 2];
+        Array.Fill(image, (byte)0xE5);
+        byte[] source = File.ReadAllBytes(slicePath);
+        int copied = source.Length - CpmLayout.Hd1k.BootLength;
+        Buffer.BlockCopy(source, CpmLayout.Hd1k.BootLength, image, CpmLayout.Hd512.BootLength, copied);
+        StampVolume(image, "CP/M 2.2");
+
+        var device = new MemoryDevice(image, "hd512");
+        using RomWbwDisk disk = RomWbwDisk.Open(device);
+        Check(RomWbwDisk.IsClearImage(device), "hd512 image is recognized");
+        Check(disk.Kind == "hd512", "classic image kind " + disk.Kind);
+        Check(disk.Slices.Count == 2, "two hd512 slices, got " + disk.Slices.Count);
+        Check(disk.Slices[0].Length == sliceBytes, "hd512 slice length");
+        Check(disk.Slices[0].Label == "CP/M 2.2", "hd512 volume label " + disk.Slices[0].Label);
+        Check(disk.Slices[1].Caption.Contains("unused"), "second hd512 slice " + disk.Slices[1].Caption);
+
+        using CpmFileSystem fs = disk.OpenSlice(0);
+        IReadOnlyList<CpmFile> files = fs.List();
+        Check(files.Count > 0, "hd512 file count " + files.Count);
+        CpmFile nzcom = Find(files, 0, "NZCOM", "COM");
+        byte[] body = fs.ReadFile(nzcom);
+        Check(body.Length == 10624 && body[0] == 0xC3, "hd512 reads NZCOM.COM");
+
+        fs.WriteFile(0, "NEW", "TXT", Encoding.ASCII.GetBytes("hd512"));
+        fs.Save();
+        Check(device.Writes.Count > 0 && device.Writes.All(write =>
+                write.Offset >= CpmLayout.Hd512.BootLength && write.Offset + write.Count <= sliceBytes),
+            "hd512 writes stay inside slice 0, after the system tracks");
+        Check(image.Skip(sliceBytes).All(value => value == 0xE5), "the other hd512 slice is untouched");
+    }
+
+    private static void RenameTouchesOnlyTheName(string slicePath)
+    {
+        byte[] image = File.ReadAllBytes(slicePath);
+        byte[] original = (byte[])image.Clone();
+        for (int i = 0; i < SliceVolume.LabelLength; i++)
+            image[SliceVolume.LabelOffset + i] = 0xE5;
+        image[1527] = 0xE5;
+        var device = new MemoryDevice(image, "rename");
+        using (RomWbwDisk disk = RomWbwDisk.Open(device))
+        {
+            Check(disk.Slices[0].Caption == "00    NZ-COM*", "guessed caption " + disk.Slices[0].Caption);
+            disk.RenameSlice(0, "  Turbo Pascal  ");
+        }
+
+        Check(device.Writes.Count == 1 && device.Writes[0].Offset == 1024 && device.Writes[0].Count == 512,
+            "rename writes the third sector only");
+        int outside = 0;
+        int changed = 0;
+        for (int i = 0; i < image.Length; i++)
+        {
+            if (image[i] == original[i])
+                continue;
+            changed++;
+            bool inName = i >= SliceVolume.LabelOffset && i < SliceVolume.LabelOffset + SliceVolume.LabelLength;
+            if (!inName && i != 1527)
+                outside++;
+        }
+        Check(changed > 0 && outside == 0, "only the name bytes changed, outside=" + outside);
+
+        using (RomWbwDisk renamed = RomWbwDisk.Open(device))
+        {
+            Check(renamed.Slices[0].VolumeLabel == "Turbo Pascal", "renamed volume " + renamed.Slices[0].VolumeLabel);
+            Check(renamed.Slices[0].Caption == "00    Turbo Pascal", "renamed caption " + renamed.Slices[0].Caption);
+            using CpmFileSystem fs = renamed.OpenSlice(0);
+            Check(fs.List().Count == 362, "rename leaves the files");
+        }
+
+        bool rejected = false;
+        try
+        {
+            using RomWbwDisk disk = RomWbwDisk.Open(device);
+            disk.RenameSlice(0, "this name is far too long");
+        }
+        catch (IOException)
+        {
+            rejected = true;
+        }
+        Check(rejected, "a name longer than 16 characters is refused");
+
+        string minezPath = Path.Combine(Path.GetTempPath(), "minez-cpm.img");
+        if (File.Exists(minezPath))
+        {
+            using var minezDevice = new FileBlockDevice(minezPath, writable: false);
+            using RomWbwDisk minez = RomWbwDisk.Open(minezDevice);
+            bool blocked = false;
+            try
+            {
+                minez.RenameSlice(0, "Nope");
+            }
+            catch (IOException ex)
+            {
+                blocked = ex.Message.Contains("no slice name", StringComparison.Ordinal);
+            }
+            Check(blocked, "a Min-eZ partition cannot be renamed");
+        }
+    }
+
+    private static void RecognizesClearImages(string slicePath)
+    {
+        using (var slice = new FileBlockDevice(slicePath, writable: false))
+            Check(RomWbwDisk.IsClearImage(slice), "hd1k slice image is recognized");
+
+        byte[] zeros = new byte[(int)RomWbwDisk.SliceLength];
+        Check(!RomWbwDisk.IsClearImage(new MemoryDevice(zeros, "zeros")), "a zero-filled file is not an image");
+        byte[] empty = new byte[(int)RomWbwDisk.SliceLength];
+        Array.Fill(empty, (byte)0xE5);
+        Check(RomWbwDisk.IsClearImage(new MemoryDevice(empty, "empty")), "an empty slice is recognized");
+
+        byte[] shortFile = new byte[1440 * 1024];
+        Check(!RomWbwDisk.IsClearImage(new MemoryDevice(shortFile, "floppy")), "a floppy image is not a slice");
+
+        int media = (int)(RomWbwDisk.PrefixLength + RomWbwDisk.SliceLength * 2);
+        byte[] disk = new byte[media];
+        disk[510] = 0x55;
+        disk[511] = 0xAA;
+        disk[446 + 4] = 0x2E;
+        BitConverter.GetBytes(2048).CopyTo(disk, 446 + 8);
+        BitConverter.GetBytes(media / 512 - 2048).CopyTo(disk, 446 + 12);
+        Check(RomWbwDisk.IsClearImage(new MemoryDevice(disk, "hd1k-disk")), "an exact hd1k disk is recognized");
+
+        byte[] ragged = new byte[media + 4096];
+        disk.CopyTo(ragged, 0);
+        Check(!RomWbwDisk.IsClearImage(new MemoryDevice(ragged, "ragged")), "a disk with a partial slice is not recognized");
+
+        string binary = @"C:\Users\miguel\Documents\development\RomWBW\Binary";
+        if (!Directory.Exists(binary))
+            return;
+
+        foreach (string file in Directory.EnumerateFiles(binary))
+        {
+            string name = Path.GetFileName(file);
+            bool want = name.StartsWith("hd1k_", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("hd512_", StringComparison.OrdinalIgnoreCase);
+            if (new FileInfo(file).Length < RomWbwDisk.SliceLength)
+                want = false;
+            if (name.StartsWith("fd144_", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                want = false;
+            using var image = new FileBlockDevice(file, writable: false);
+            bool clear = RomWbwDisk.IsClearImage(image);
+            if (name is "psys.img" or "psys_fp.img")
+                want = true;
+            if (want || name.StartsWith("fd144_", StringComparison.OrdinalIgnoreCase) || name is "GPL-3.0.txt" or "hd1k_prefix.dat" or "hd512_combo.img")
+                Check(clear == want, name + (clear ? " blue" : " plain"));
+        }
+    }
+
+    private static void RejectsASliceTheDiskDidNotKeep(string slicePath)
+    {
+        byte[] blank = new byte[(int)RomWbwDisk.SliceLength];
+        Array.Fill(blank, (byte)0xE5);
+        var destination = new MemoryDevice(blank, "drop", keepWrites: false);
+        using var sourceDevice = new FileBlockDevice(slicePath, writable: false);
+        using RomWbwDisk source = RomWbwDisk.Open(sourceDevice);
+        using RomWbwDisk disk = RomWbwDisk.Open(destination);
+        bool rejected = false;
+        try
+        {
+            disk.ReplaceSlice(0, source, 0);
+        }
+        catch (IOException ex)
+        {
+            rejected = ex.Message.Contains("did not keep", StringComparison.Ordinal);
+        }
+        Check(rejected, "a slice the disk did not keep is refused");
+        Check(blank[0] == 0xE5 && blank[16384] == 0xE5, "the blank slice was not treated as written");
+    }
+
+    private static void StampVolume(byte[] image, string label, bool signature = true)
+    {
+        image[SliceVolume.SignatureOffset] = signature ? (byte)0x5A : (byte)0;
+        image[SliceVolume.SignatureOffset + 1] = signature ? (byte)0xA5 : (byte)0;
+        for (int i = 0; i < SliceVolume.LabelLength; i++)
+            image[SliceVolume.LabelOffset + i] = (byte)'$';
+        byte[] text = Encoding.ASCII.GetBytes(label);
+        Buffer.BlockCopy(text, 0, image, SliceVolume.LabelOffset, text.Length);
     }
 
     private static CpmFile Find(IReadOnlyList<CpmFile> files, int user, string name, string type)
@@ -391,12 +677,15 @@ internal static class Program
     {
         private readonly byte[] _data;
 
-        public MemoryDevice(byte[] data, string name)
+        public MemoryDevice(byte[] data, string name, bool keepWrites = true)
         {
             _data = data;
             DisplayName = name;
+            KeepWrites = keepWrites;
             OriginalMbr = data.Take(512).ToArray();
         }
+
+        public bool KeepWrites { get; }
 
         public List<(long Offset, int Count)> Writes { get; } = [];
 
@@ -418,7 +707,8 @@ internal static class Program
         public void Write(long offset, byte[] buffer, int index, int count)
         {
             Writes.Add((offset, count));
-            Buffer.BlockCopy(buffer, index, _data, (int)offset, count);
+            if (KeepWrites)
+                Buffer.BlockCopy(buffer, index, _data, (int)offset, count);
         }
 
         public void Dispose()

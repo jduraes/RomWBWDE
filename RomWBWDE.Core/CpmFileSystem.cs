@@ -74,7 +74,7 @@ public sealed class CpmFileSystem : IDisposable
         if (slice.Length < layout.BootLength + layout.DirectoryLength)
             throw new InvalidDataException("The slice is too small to hold this CP/M filesystem.");
 
-        int usable = (int)Math.Min(slice.Length, RomWbwDisk.SliceLength);
+        int usable = (int)Math.Min(slice.Length, layout.SliceBytes);
         byte[] data = new byte[usable];
         slice.Read(0, data, 0, data.Length);
         return new CpmFileSystem(slice, sliceIndex, isPhysical, layout, data);

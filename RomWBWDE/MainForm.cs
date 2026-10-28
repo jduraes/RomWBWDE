@@ -53,6 +53,9 @@ internal sealed class MainForm : Form
             ("← Copy", (_, _) => CopyBetween(_right, _left)),
             ("Delete", (_, _) => DeleteFrom(_right)));
 
+        _left.HighlightedFile = () => _right.HighlightedHostFile();
+        _right.HighlightedFile = () => _left.HighlightedHostFile();
+
         _left.BecameActive += (_, _) => Activate(_left);
         _right.BecameActive += (_, _) => Activate(_right);
         _left.PanelDropped += (sender, _) => CopyBetween((BrowserPanel)sender!, _left);

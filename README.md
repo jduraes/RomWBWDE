@@ -2,7 +2,7 @@
 
 RomWBWDE is a spiritual evolution of [RC2014 CP/M Disk Explorer](https://github.com/ForNextSoftwareDevelopment/RC2014CpmDskExp) by Dirk Prins (ForNext Software Development, 2023). His program remains at that address.
 
-It reads and writes a RomWBW hd1k card or disk image, one 8 MiB slice at a time. Two panes sit side by side, in the manner of a split file manager. One pane can be a Windows folder, the other the card. Files copy in either direction. A slice can also be written, extracted, or erased on its own. The partition table and the other slices are left alone.
+It reads and writes a RomWBW card or disk image, one slice at a time. A modern hd1k slice is 8 MiB. A classic hd512 slice is a little larger. Two panes sit side by side, in the manner of a split file manager. One pane can be a Windows folder, the other the card. Files copy in either direction. A slice can also be written, extracted, or erased on its own. The partition table and the other slices are left alone.
 
 ## Writing to a disk
 
@@ -22,23 +22,36 @@ To build it yourself, double-click `RomWBWDE.cmd` in this directory. It publishe
 dotnet run --project RomWBWDE
 ```
 
+## Version 1.0.2
+
+A slice is named from the label stored in its third sector, and a write of a whole slice now stays on the card.
+
+- The 16-byte name is read even when the boot signature is absent. A name inferred from the files is marked with a star, for example `NZ-COM*`. MBASIC on its own is not enough to name the slice.
+- **Rename slice** writes that name and nothing else. A Min-eZ partition has no such name.
+- Classic hd512 disks are opened. An hd512 slice is 8,519,680 bytes and cannot be written over an hd1k slice.
+- In a folder, an hd1k slice or disk, an hd512 slice or disk, or a Min-eZ / eZT-RCB image is shown in blue.
+- **Write slice** uses the one file highlighted in the other pane. If none is highlighted, or more than one is, it asks you to choose a file.
+- The slice is read back after the write. Windows keeps the RomWBW partition mounted even with no drive letter, and a write is then refused as "the device is not ready". The program locks that volume, takes it offline, brings it back, and then writes.
+
 ## The card
 
 A modern RomWBW hard disk has a partition of type `0x2E`. After a 1 MiB prefix, the slices are laid out one after another. Each slice is 8,388,608 bytes: 1,024 tracks of 16 sectors of 512 bytes. The first 16 KB of a slice are the system tracks. The CP/M directory follows.
 
 Only whole slices that fit on the media are offered. A partial slice at the end of the card is not shown, and neither is a partition that starts past the end of the card.
 
-A file that is itself one 8 MiB slice is opened as a single slice. A larger RomWBW disk image is opened as the set of slices inside it.
+A file that is itself one slice is opened as a single slice. A larger RomWBW disk image is opened as the set of slices inside it.
+
+A classic RomWBW disk has no type `0x2E` partition. Its slices start at the first sector. Each one is 8,519,680 bytes: 1,040 tracks of 16 sectors of 512 bytes, with 128 KB of system tracks, 4 KB blocks, and 512 directory entries. That is the hd512 layout. Up to 256 whole slices are offered. An hd512 slice cannot be written over an hd1k slice, because the two sizes differ.
 
 A Min-eZ card keeps CP/M on its own partition, type `0x52`, of the same 8,388,608 bytes. That filesystem has no system tracks. Its blocks are 8 KB and its directory has 512 entries. The FAT32 partition on the card is not a slice and is left alone. The CP/M partition is labelled Min-eZ unless the files belong to a more specific system. On the card this was checked against, the FAT32 partition entry still covers the first 4 MB of the CP/M partition, so filling that card from Windows can reach the CP/M area.
 
-Slices that contain a recognisable system are labelled from their files: NZ-COM, ZPM3, Z3PLUS, DOS/65, Turbo Pascal, SLR Z80, Games, Z-System, MSX, ROM images, CP/M 3, WordStar, dBASE, QP/M, MBASIC, Music, ZSDOS, CP/M 2.2, or CP/M. A slice with no files is labelled unused.
+Each slice is shown under the name stored in its third sector, whether or not the boot signature is present. `hd1k_combo.img` therefore shows CP/M 2.2 and ZSDOS 1.1 for its first two slices, rather than a program that happens to be on them. A slice with no name there is labelled from the files that distinguish it, and that guess is shown with a star, for example `NZ-COM*`. One program that happens to be present, such as MBASIC, is not enough. The names that come out of that guess are NZ-COM, ZPM3, Z3PLUS, QP/M, DOS/65, Turbo Pascal, SLR Z80, WordStar, dBASE, MBASIC, Fortran, Cowgol, Hi-Tech C, Aztec C, COBOL, BPBIOS, Infocom, Games, Z-System, MSX, ROM images, Music, CP/M 3, ZSDOS, CP/M 2.2, or CP/M. A slice with no files and no stored name is labelled unused.
 
 ## The two panes
 
 Each pane has Folder, Image, and Drive.
 
-- Folder opens a Windows directory.
+- Folder opens a Windows directory. A file that is an hd1k slice or disk, an hd512 slice or disk, or a Min-eZ / eZT-RCB image is shown in blue.
 - Image opens a RomWBW disk image or a single slice file.
 - Drive lists removable disks that currently have media. Each line shows the drive letter, the model, the size, and the `PHYSICALDRIVEn` name.
 
@@ -56,7 +69,7 @@ A file from Windows is stored as user 0, with an 8.3 name in capitals, unless a 
 
 The program asks before it writes, and the question lists the names. Afterwards the destination pane refreshes and the new files are shown.
 
-A copy onto the card rewrites only the changed 4 KB blocks inside the selected slice, and only after the 16 KB system tracks are checked to be unchanged. The partition table and the other slices are not written. Before the first write, Windows volumes on that disk are dismounted.
+A copy onto the card rewrites only the changed 4 KB blocks inside the selected slice, and only after the 16 KB system tracks are checked to be unchanged. The partition table and the other slices are not written. Before the first write, the program locks the Windows volume on that disk, takes it offline, and brings it back, so the card keeps the bytes.
 
 If the slice has no CP/M directory, you are asked before it is initialised. That fills the directory of that slice only.
 
@@ -66,13 +79,15 @@ On a slice, Delete and F8 remove the ticked CP/M files from that slice. They do 
 
 On a Windows folder, Delete moves the ticked files and folders to the Recycle Bin. The `..` row is never included.
 
-## Writing, extracting, and erasing a slice
+## Writing, extracting, renaming, and erasing a slice
 
-These three buttons sit under the slice list.
+These buttons sit under the slice list.
 
-**Write slice** copies a RomWBW slice image into the slice you are looking at. The slice must be unused. The image can be one 8 MiB slice, or a larger RomWBW disk, in which case you choose which of its slices to write. The whole slice is replaced, system tracks included. The partition table and every other slice stay as they are.
+**Write slice** copies a RomWBW slice image into the slice you are looking at. The slice must be unused. When the other pane has exactly one file highlighted, that file is the image. Otherwise you are asked to choose one. The image can be one slice, or a larger RomWBW disk, in which case you choose which of its slices to write. The whole slice is replaced, system tracks included. The partition table and every other slice stay as they are. The slice is read back afterwards, and the write is reported as failed if the disk did not keep it. Windows mounts the RomWBW partition even when that partition has no drive letter. While it is in that state the card answers a write with "the device is not ready". The program locks the volume, takes it offline and brings it back, and then writes. The lock is held until the card is closed.
 
-**Extract slice** saves the slice you are looking at as an 8 MiB `.img` file. The suggested name is the slice number and its label, for example `00-NZ-COM.img`. That file is the slice itself. RomWBW, and Write slice, open it as a single slice. Nothing on the card is written.
+**Extract slice** saves the slice you are looking at as an `.img` file. The suggested name is the slice number and its label, for example `00-NZ-COM.img`. That file is the slice itself. RomWBW, and Write slice, open it as a single slice. Nothing on the card is written.
+
+**Rename slice** changes the name stored in the slice. The write is the one sector that holds the name. Files are left as they are, and so are the partition table and the other slices. A Min-eZ partition has no such name.
 
 **Delete slice** erases a slice that has files, including its system tracks, and leaves it unused. The partition table and the other slices are not changed.
 
