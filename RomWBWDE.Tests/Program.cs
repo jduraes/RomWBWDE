@@ -26,6 +26,7 @@ internal static class Program
         ExtractedSliceIsARomWbwImage(slicePath);
         DateStampSlotsStayReserved();
         MinEzImageReadsHello();
+        MinEzKeepsTheThirdDirectoryBlock();
         MinEzPartitionLeavesTheFatArea();
         VolumeLabelBeatsTheFileGuess(slicePath);
         Hd512UsesItsOwnSlice(slicePath);
@@ -399,6 +400,42 @@ internal static class Program
         Check(text.StartsWith("Hello from the Min-eZ UART1 XMODEM workflow!"), "HELLO.TXT text");
     }
 
+    private static void MinEzKeepsTheThirdDirectoryBlock()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "minez-cpm.img");
+        if (!File.Exists(path))
+            return;
+
+        byte[] image = File.ReadAllBytes(path);
+        Check(image[16] == 3 && image[17] == 0, "HELLO.TXT is stored in block 3");
+        Check(image.Skip(16384).Take(8192).All(value => value == 0xE5), "entries 512-767 are an empty directory block");
+
+        int at = 600 * 32;
+        Array.Clear(image, at, 32);
+        Encoding.ASCII.GetBytes("LATE    TXT").CopyTo(image, at + 1);
+        image[at] = 0;
+        image[at + 13] = 8;
+        image[at + 15] = 1;
+        image[at + 16] = 4;
+        byte[] payload = Encoding.ASCII.GetBytes("late-dir");
+        payload.CopyTo(image, 4 * 8192);
+        byte[] third = image.Skip(16384).Take(8192).ToArray();
+
+        var card = new MemoryDevice(image, "minez.img");
+        using (RomWbwDisk disk = RomWbwDisk.Open(card))
+        using (CpmFileSystem fs = disk.OpenSlice(0))
+        {
+            byte[] late = fs.ReadFile(Find(fs.List(), 0, "LATE", "TXT"));
+            Check(late.AsSpan(0, payload.Length).SequenceEqual(payload), "a file past entry 511 is readable");
+            fs.WriteFile(0, "NEW", "BIN", new byte[] { 1, 2, 3, 4 });
+            fs.Save();
+            Check(fs.ReadFile(Find(fs.List(), 0, "LATE", "TXT")).AsSpan(0, payload.Length).SequenceEqual(payload),
+                "the late directory entry survives a new file");
+        }
+
+        Check(image.AsSpan(16384, 8192).SequenceEqual(third), "a new file does not use the third directory block");
+    }
+
     private static void MinEzPartitionLeavesTheFatArea()
     {
         string path = Path.Combine(Path.GetTempPath(), "minez-cpm.img");
@@ -438,6 +475,8 @@ internal static class Program
         }
 
         Check(image.AsSpan(0, prefix).SequenceEqual(before.AsSpan(0, prefix)), "FAT area and partition table were not written");
+        Check(image.AsSpan(prefix + 16384, 8192).SequenceEqual(before.AsSpan(prefix + 16384, 8192)),
+            "the third directory block was not allocated as file data");
         foreach ((long offset, int count) in card.Writes)
         {
             Check(offset >= prefix, "min-ez write starts in the CP/M partition: " + offset);

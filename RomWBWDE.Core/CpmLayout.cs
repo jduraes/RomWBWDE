@@ -53,13 +53,13 @@ public readonly record struct CpmLayout
         SliceBytes = (int)RomWbwDisk.Hd512SliceLength
     };
 
-    /// <summary>Min-eZ 8 MB partition: no system tracks, 8 KB blocks, 512 directory entries.</summary>
+    /// <summary>Min-eZ 8 MB partition: no system tracks, 8 KB blocks, 768 directory entries.</summary>
     public static CpmLayout MinEz { get; } = new()
     {
         Name = "minez",
         BootLength = 0,
         BlockSize = 8192,
-        DirectoryEntries = 512,
+        DirectoryEntries = 768,
         ExtentsPerEntry = 4,
         BlockCount = 8388608 / 8192,
         SliceBytes = 8388608
